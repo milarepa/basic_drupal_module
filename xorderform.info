@@ -1,0 +1,10 @@
+name = Capitello Wine Order Form
+description = A custom wine order form for Capitello Wines.
+core = 7.x
+package = Custom for Capitello
+version = 7.x.1.1
+stylesheets[all][] = css/xorderform.css
+
+scripts[] = js/xorderform.js
+
+dependencies[] = entity

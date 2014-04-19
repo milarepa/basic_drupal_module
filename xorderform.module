@@ -1,0 +1,629 @@
+<?php
+/**
+ * include inc
+ * */
+include('xorderform.inc');
+/**
+ * @file
+ *  xorderform.module main file for Capitello's
+ *  custom catalog.
+ * */
+
+/**
+ * Implemetation of hook_init()
+ * Use for system ui if needed
+ * */
+function xorderform_init() {
+    drupal_add_library('system','ui');
+}
+
+/**
+ * Implements hook_node_info()
+ * creates new content type
+ * */
+function xorderform_node_info() {
+    return array(
+        'xorderform_data' => array(
+            'name' => t('Orderform'),
+            'base' => 'node_content',
+            'description' => t('Content type for wine orders'),
+            'title_label' => t('Orderform'),
+            'locked' => TRUE,
+        ),
+    );
+}
+/**
+ * Implements hook_node_type_insert()
+ * adds body field to new type
+ * */
+function xorderform_node_type_insert($content_type) {
+    node_add_body_field($content_type, t('Order List'));
+}
+/**
+ * Implements hook_form()
+ * add edit form to content type.
+ * punt and return.
+ * */
+function xorderform_data_form($form, $form_state) {
+    return node_content_form($form, $form_state);
+}
+/**
+ * Implements hook_node_access()
+ * restrict access of xorderform content
+ * type to only its creator, unless its a
+ * manager, who can see all orders.
+ * */
+function xorderform_node_access($node, $op, $account) {
+    
+    global $user;
+    
+    // abort if node has not been created yet
+    if(is_string($node)) {
+        return NODE_ACCESS_IGNORE;
+    }
+    
+    //grab IDs
+    $uuid = $user->uid;
+    $nuid = $node->uid;
+    $type = $node->type;
+    
+    if(in_array($op, array('view','update','delete','create'), TRUE) && $type == 'xorderform_data') {
+        
+        if($uuid == $nuid || in_array($user->roles, array('manager'), TRUE)) {
+            return NODE_ACCESS_ALLOW;
+        } else {
+            return NODE_ACCESS_DENY;
+        }
+    
+    }
+    
+}
+ 
+/**
+ * Implements hook_help()
+ * 
+ * Displays help and information.
+ * 
+ * @param path
+ *  Which path of our site will display help
+ * @param arg
+ *  Array that holds the current path as returned from arg()
+ * */
+function xorderform_help($path, $arg) {
+    switch($path) {
+        case "admin/help#xorderform":
+            return '<p>'. t("Creates a catalog of current wines for sale, allows the user to select from the catalog and provide a form to order. Capitello will contact the buyer directly so there is no payment gateway.") . '</p>';
+            break;
+        }
+}
+
+/**
+ * Implementing hook_permission()
+ * 
+ * sets access to order form and order list
+ * 
+ * */
+function xorderform_permission() {
+    return array(
+    'view current orders' => array(
+        'title' => t('View Current Orders'),
+        'description' => t('View orders - all orders for admin'),
+    ),
+    'access order form' => array(
+        'title' => t('Access Order Form'),
+        'description' => t('Access the order form'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu()
+ * 
+ * creates urls to link module pages too.
+ * 
+ * */
+function xorderform_menu() {
+    $items = array();
+    $items['user/%user/orderform'] = array(
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('xorderform_form'),
+        'access callback' => 'user_access',
+        'title' => t('Capitello Wine Order Form'),
+        'description' => t('Order Form'),
+        'access arguments' => array('access order form'),
+        'type' => MENU_LOCAL_TASK,
+    );
+    $items['user/%user/current_orders'] = array(
+        'page callback' => 'xorderform_orderlist',
+        'access callback' => 'user_access',
+        'title' => 'Current Orders',
+        'description' => t('Here is a current list of orders comming from the website.'),
+        'access arguments' => array('view current orders'),
+        'type' => MENU_LOCAL_TASK,
+    );
+    return $items;
+}
+
+/**
+ * Implements hook_form()
+ *  functions for page logic and admin section
+ * @param form
+ *  array that holds the form
+ * @param form_submit
+ *  array that holds the submitted data 
+ * */
+function xorderform_form($form, &$form_submit) {
+    global $user;
+    $yn_opt = array(
+        0 => t('Yes'), 
+        1 => t('No')
+    );
+    
+    $form['cap_order_form'] = array(
+        '#type' => 'item',
+        '#title' => t('Order Form'),
+    );
+    $form['client_info'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Your Information'),
+    );
+    $form['client_info']['name'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Name :'),
+        '#max_length' => '100',
+        '#default_value' => $user->name,
+        '#required' => TRUE,
+    );
+    $form['client_info']['email'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Email Address :'),
+        '#required' => TRUE,
+        '#max_length' => '100',
+        '#default_value' => $user->mail,
+        '#element_validate' => array('xo_email_validate'),
+    );
+    $form['client_info']['phone'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Daytime Phone Number :'),
+        '#required' => TRUE,
+        '#description' => t('International numbers must be formatted as (12) 345-6789, and US numbers must be formatted as (123) 456-7890.'),
+        '#maxlength' => '20',
+        '#size' => '30',
+        '#element_validate' => array('xo_phone_validate'),
+    );
+    $form['client_info']['shipping'] = array(
+        '#type' => 'textarea',
+        '#description' => t('Enter your shipping address :'),
+        '#title' => t('Shipping Address'),
+        '#max_length' => '300',
+        '#required' => True,
+    );
+    $form['wines'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Select the quantity of cases and/or bottles from our wine list. Click to open sections.'),
+    );
+    $form['wines']['nv_brut_sparkling'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('NV Brut Sparkling Wine'),
+        '#description' => t('72% Pinot Noir - 28% Chardonnay'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+    );
+    $form['wines']['nv_brut_sparkling']['nv_bs_case'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Cases : $168 per case <i>(6 pack)</i>.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['nv_brut_sparkling']['nv_bs_bottle'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Bottles : $28.00 a piece.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['pinot_gris'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Pinot Gris'),
+        '#description' => t('From the Willaette Valley'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+    );
+    $form['wines']['pinot_gris']['pg_case'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Cases : $216 per case.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['pinot_gris']['pg_bottle'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Bottles : $18.00 a piece.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['sauvignon_blanc'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Sauvignon Blanc'),
+        '#description' => t('From the Walnut Ridge Vineyard, Willaette Valley'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+    );
+    $form['wines']['sauvignon_blanc']['sb_case'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Cases : $240 per case.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['sauvignon_blanc']['sb_bottle'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Bottles : $20.00 a piece.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['sauvignon_blanc_nz'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Sauvignon Blanc New Zealand'),
+        '#description' => t('From the Walnut Ridge Vineyard, Willaette Valley'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+    );
+    $form['wines']['sauvignon_blanc_nz']['sbnz_case'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Cases : $240 per case.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['sauvignon_blanc_nz']['sbnz_bottle'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Bottles : $20.00 a piece.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['pinot_noir'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Pinot Noir'),
+        '#description' => t('Willaette Valley'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+    );
+    $form['wines']['pinot_noir']['pn_case'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Cases : $210.00 per case <i>6 pack</i>.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['pinot_noir']['pn_bottle'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Bottles : $35.00 a piece.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['pinot_noir_nz'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Pinot Noir New Zealand'),
+        '#description' => t('Malborough, New Zealand'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+    );
+    $form['wines']['pinot_noir_nz']['pnnz_case'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Cases : $300.00 per case.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['pinot_noir_nz']['pnnz_bottle'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Bottles : $25.00 a piece.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['riesling'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Riesling'),
+        '#description' => t('Late Harvest, Oregon'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+    );
+    $form['wines']['riesling']['r_case'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Cases : $240.00 per case.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['riesling']['r_bottle'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Bottles : $20.00 a piece.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['dolcino'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Dolcino'),
+        '#description' => t('Gewurzraminer, Oregon Desert Wine'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+    );
+    $form['wines']['dolcino']['d_case'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Cases : $264.00 per case.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['wines']['dolcino']['d_bottle'] = array(
+        '#type' => 'textfield',
+        '#size' => '5',
+        '#title' => t('Bottles : $22.00 a piece.'),
+        '#max_length' => '3',
+        '#default_value' => '0',
+        '#element_validate' => array('element_validate_number'),
+    );
+    $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => 'Submit',
+    );
+    $form['#submit'][] = 'xorderform_form_submit';
+    return $form;
+}
+
+/**
+ * Implement hook_submit().
+ * @param form
+ *  array that holds the form
+ * @param form_submit
+ *  array that holds the submitted data
+ * 
+ * */
+function xorderform_form_submit($form, &$form_submit) {
+    
+    global $user;
+    $uid = $user->uid;
+    $discount = 0;
+    $order = array();
+    $total_charge = 0;
+    $body = '';
+    $subject = '';
+    
+    //dpm($_POST); // devel arrays for form inspection
+    
+    // collect data from form
+    $name = $form_submit['input']['name'];
+    $email = $form_submit['input']['email'];
+    $phone = $form_submit['input']['phone'];
+    $shipping_add = $form_submit['input']['shipping'];
+  
+    // NV Brut Spsarkling
+    $nvbscase = $form_submit['input']['nv_bs_case'];
+    $nvbsbottle = $form_submit['input']['nv_bs_bottle'];
+    $nvbsbottle_price = 28.00 * $nvbsbottle;
+    $nvbscase_price = 168.00 * $nvbscase;
+    if($nvbsbottle != 0) {
+        $order['NV Brut Sparkling']['bottle total'] = '$'.$nvbsbottle_price;
+        $order['NV Brut Sparkling']['bottle count'] = $nvbsbottle;
+        $total_charge = $total_charge + $nvbsbottle_price;
+    }
+    if($nvbscase != 0) {
+        $order['NV Brut Sparkling']['case total'] = '$'.$nvbscase_price;
+        $order['NV Brut Sparkling']['case count'] = $nvbscase;
+        $total_charge = $total_charge + $nvbscase_price;
+    } 
+    
+    // Pinot Gris
+    $pgcase = $form_submit['input']['pg_case'];
+    $pgbottle = $form_submit['input']['pg_bottle'];
+    $pgcase_price = 216.00 * $pgcase;
+    $pgbottle_price = 18.00 * $pgbottle;
+    if($pgcase != 0) {
+        $order['Pinot Gris']['case total'] = '$'.$pgcase_price;
+        $order['Pinot Gris']['case count'] = $pgcase;
+        $total_charge = $total_charge + $pgcase_price;
+    }
+    if($pgbottle != 0) {
+        $order['Pinot Gris']['bottle total'] = '$'.$pgbottle_price;
+        $order['Pinot Gris']['bottle count'] = $pgbottle;
+        $total_charge = $total_charge + $pgbottle_price;
+    }
+    
+    // Savignon Blanc
+    $sbcase = $form_submit['input']['sb_case'];
+    $sbbottle = $form_submit['input']['sb_bottle'];
+    $sbcase_price = 240.00 * $sbcase;
+    $sbbottle_price = 20.00 * $sbbottle;
+    if($sbcase != 0) {
+        $order['Sauvignon Blanc']['case total'] = '$'.$sbcase_price;
+        $order['Sauvignon Blanc']['case count'] = $sbcase;
+        $total_charge = $total_charge + $sbcase_price;
+    }
+    if($sbbottle != 0) {
+        $order['Sauvignon Blanc']['bottle total'] = '$'.$sbbottle_price;
+        $order['Sauvignon Blanc']['bottle count'] = $sbbottle;
+        $total_charge = $total_charge + $sbbottle_price;
+    }
+    
+    // SB New Zealand
+    $sbnzcase = $form_submit['input']['sbnz_case'];
+    $sbnzbottle = $form_submit['input']['sbnz_bottle'];
+    $sbnzcase_price = 216.00 * $sbnzcase;
+    $sbnzbottle_price = 18.00 * $sbnzbottle;
+    if($sbnzcase != 0) {
+        $order['Sauvignon Blanc New Zealand']['case total'] = '$'.$sbnzcase_price;
+        $order['Sauvignon Blanc New Zealand']['case count'] = $sbnzcase;
+        $total_charge = $total_charge + $sbnzcase_price;
+    }
+    if($sbnzbottle != 0) {
+        $order['Sauvignon Blanc New Zealand']['bottle total'] = '$'.$sbnzbottle_price;
+        $order['Sauvignon Blanc New Zealand']['bottle count'] = $sbnzbottle;
+        $total_charge = $total_charge + $sbnzbottle_price;
+    }
+    
+    // Pinot Noir
+    $pncase = $form_submit['input']['pn_case'];
+    $pnbottle = $form_submit['input']['pn_bottle'];
+    $pncase_price = 210.00 * $pncase;
+    $pnbottle_price = 35.00 * $pnbottle;
+    if($pncase != 0) {
+        $order['Pinot Noir']['case total'] = '$'.$pncase_price;
+        $order['Pinot Noir']['case count'] = $pncase;
+        $total_charge = $total_charge + $pncase_price;
+    }
+    if($pnbottle != 0) {
+        $order['Pinot Noir']['bottle total'] = '$'.$pnbottle_price;
+        $order['Pinot Noir']['bottle count'] = $pnbottle;
+        $total_charge = $total_charge + $pnbottle_price;
+    }
+    
+    // Pinot Noir New Zealand
+    $pnnzcase = $form_submit['input']['pnnz_case'];
+    $pnnzbottle = $form_submit['input']['pnnz_bottle'];
+    $pnnzcase_price = 300.00 * $pnnzcase;
+    $pnnzbottle_price = 25.00 * $pnnzbottle;
+    if($pnnzcase != 0) {
+        $order['Pinot Noir New Zealand']['case total'] = '$'.$pnnzcase_price;
+        $order['Pinot Noir New Zealand']['case count'] = $pnnzcase;
+        $total_charge = $total_charge + $pnnzcase_price;
+    }
+    if($pnnzbottle != 0) {
+        $order['Pinot Noir New Zealand']['bottle total'] = '$'.$pnnzbottle_price;
+        $order['Pinot Noir New Zealand']['bottle count'] = $pnnzbottle;
+        $total_charge = $total_charge + $pnnzbottle_price;
+    }
+    
+    // Reisling
+    $rcase = $form_submit['input']['r_case'];
+    $rbottle = $form_submit['input']['r_bottle'];
+    $rcase_price = 240.00 * $rcase;
+    $rbottle_price = 20.00 * $rbottle;
+    if($rcase != 0) {
+        $order['Riesling']['case total'] = '$'.$rcase_price;
+        $order['Riesling']['case count'] = $rcase;
+        $total_charge = $total_charge + $rcase_price;
+    }
+    if($rbottle != 0) {
+        $order['Riesling']['bottle total'] = '$'.$rbottle_price;
+        $order['Riesling']['bottle count'] = $rbottle;
+        $total_charge = $total_charge + $rbottle_price;
+    }
+    
+    // Dolcino
+    $dcase = $form_submit['input']['d_case'];
+    $dbottle = $form_submit['input']['d_bottle'];
+    $dcase_price = 264.00 * $dcase;
+    $dbottle_price = 22.00 * $dbottle;
+    if($dcase != 0) {
+        $order['Dolcino']['case total'] = '$'.$dcase_price;
+        $order['Dolcino']['case count'] = $dcase;
+        $total_charge = $total_charge + $dcase_price;
+    }
+    if($dbottle != 0) {
+        $order['Dolcino']['bottle total'] = '$'.$dbottle_price;
+        $order['Dolcino']['bottle count'] = $dbottle;
+        $total_charge = $total_charge + $dbottle_price;
+    }
+    
+    //dpm($order); // inspect $order array
+    
+    // check for wine club discount
+    if(in_array('wine club', $user->roles)) {
+        $discount = .20;
+    }
+    // apply discount
+    $total_charge = $total_charge - ($total_charge * $discount);
+    
+    // process order for content body
+    $order_list = '<p>Name : ' . check_plain($name) . '<br />';
+    $order_list .= 'Phone : ' . $phone . '<br />';
+    $order_list .= 'Email : ' . $email . '<br />';
+    $order_list .= 'Shipping Address : ' . check_plain($shipping_add) . '<br />';
+    $order_list .= 'Total Charge : $' . $total_charge . '<br />';
+ 
+    $order_list .= '<ul id="orderlist">';
+    foreach ($order as $label => $info) {
+        $order_list .= '<b>' . $label . '</b><br />';
+        foreach($info as $l => $i) {
+            $order_list .= '<li id="itemlist">' . $l . ' : ' . $i . '</li>';
+        }
+    }
+    $order_list .= '</ul></p>';
+    
+    // create node with each order.
+    try {
+        $values = array(
+            'type' => 'xorderform_data',
+            'uid' => $uid,
+            'status' => 1,
+            'comment' => 0,
+            'promote' => 0,
+        );
+        
+        $ent = entity_create('node', $values);
+        
+        if($ent == '') {
+            throw new Exception('Entity generation failed');
+        }
+        
+        $ent_wr = entity_metadata_wrapper('node', $ent);
+        $ent_wr->title->set('Order from ' . $user->name . ' on ' . date('r'));
+
+        if(!$ent_wr->body->set(array('value' => $order_list))) {
+            drupal_set_message(t('Set body data failed'), 'error');
+        }
+    
+        $ent_wr->body->summary->set('Order Details :');
+            
+        $ent_wr->save(true);
+    
+        entity_save('node', $ent);
+    }
+    catch (Exception $e) {
+        drupal_set_message('Error : ' . $e->getMessage(), 'error');
+    }
+    
+    $subject = 'Order from ' . check_plain($name);
+    
+    try {
+        $message = xorderform_mail($subject, $order_list);
+        if($message == 0) {
+            throw new Exception('Mail Failed to Send');
+        }
+    }
+    catch (Exception $e) {
+        drupal_set_message('Error : ' . $e->getMessage() . ' ' . $message, 'error');
+    }
+    
+    
+    
+}
+
+
+
+
+
+
